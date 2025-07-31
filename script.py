@@ -18,7 +18,7 @@ os.makedirs(output_folder, exist_ok=True)
 os.makedirs(subtitle_folder, exist_ok=True)
 
 # Funkcja tworząca obraz z tekstem (napisy), z dynamicznym tłem dla aktualnego słowa
-def make_text_image(text, highlight_word, fontsize=65, font_path=None, color='white', highlight_color='yellow', stroke_color='black', stroke_width=3, max_width=800):
+def make_text_image(text, highlight_word_index, fontsize=65, font_path=None, color='white', highlight_color='yellow', stroke_color='black', stroke_width=3, max_width=800):
     try:
         font = ImageFont.truetype(font_path or "arialbd.ttf", fontsize)
     except IOError:
@@ -26,45 +26,44 @@ def make_text_image(text, highlight_word, fontsize=65, font_path=None, color='wh
 
     wrapped_lines = textwrap.wrap(text, width=25)
 
-    # ---- POCZĄTEK POPRAWIONEGO FRAGMENTU ----
-
-    # Poprzednia metoda (sumowanie wymiarów z `getbbox`) nie uwzględniała stałych odstępów między liniami,
-    # co powodowało ucinanie tekstu przy dłuższych sentencjach.
-
-    # Poprawne obliczenie wymiarów obrazka
+    # Obliczanie wymiarów obrazka
     text_width = 0
     if wrapped_lines:
-        # Obliczanie maksymalnej szerokości linii tekstu
         text_width = max(font.getbbox(line)[2] - font.getbbox(line)[0] for line in wrapped_lines)
 
-    # Obliczanie wysokości na podstawie liczby linii i odstępu używanego w pętli (`fontsize + 10`).
-    # Dodatkowy padding (+30) powiększa box, dając więcej przestrzeni wokół tekstu.
-    text_height = len(wrapped_lines) * (fontsize + 10) + 30
+    line_spacing = fontsize + 10
+    text_height = len(wrapped_lines) * line_spacing + 30
 
-    # Stworzenie obrazka z odpowiednio dużym buforem pionowym i poziomym
     img = Image.new("RGBA", (text_width + 40, text_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # ---- KONIEC POPRAWIONEGO FRAGMENTU ----
+    y_offset = 15
+    
+    # Inicjalizujemy licznik słów
+    current_word_index = 0
 
-    y_offset = 15 # Ustawienie marginesu górnego dla lepszego wyśrodkowania w pionie
     for line in wrapped_lines:
         line_width = font.getbbox(line)[2] - font.getbbox(line)[0]
-        # Wyśrodkowanie każdej linii tekstu w poziomie
         x_offset = (text_width - line_width) / 2 + 20
+
         words_in_line = line.split()
         current_x = x_offset
+
         for word in words_in_line:
             word_width = font.getbbox(word + " ")[2] - font.getbbox(word + " ")[0]
-            if word.strip("[]") == highlight_word:
-                # Rysowanie tła dla podświetlonego słowa
+
+            # WARUNEK PODŚWIETLENIA: Sprawdzamy indeks bieżącego słowa
+            if current_word_index == highlight_word_index:
                 highlight_box = (current_x - 5, y_offset - 5, current_x + word_width + 5, y_offset + fontsize + 5)
                 draw.rectangle(highlight_box, fill=highlight_color)
-            # Rysowanie tekstu z obrysem
+
             draw.text((current_x, y_offset), word + " ", font=font, fill=color, stroke_width=stroke_width, stroke_fill=stroke_color)
             current_x += word_width
-        # Przesunięcie do następnej linii ze stałym odstępem
-        y_offset += fontsize + 10
+
+            # Zwiększamy licznik dla następnego słowa
+            current_word_index += 1
+            
+        y_offset += line_spacing
 
     return img
 
@@ -76,7 +75,7 @@ def add_captions(video_path, output_path, subtitle_path):
 
     transcription = model.transcribe(audio_tmp, language="pl", word_timestamps=True)
 
-    # Kadrowanie do 9:16
+    # Kadrowanie do 9:16 (bez zmian)
     width, height = video.size
     new_width = height * 9 // 16
     if new_width < width:
@@ -87,26 +86,31 @@ def add_captions(video_path, output_path, subtitle_path):
 
     for idx, segment in enumerate(transcription["segments"], start=1):
         segment_text = segment["text"].strip()
-        words = segment.get("words", [])
-        if not words:
+        
+        # ---- TO JEST KLUCZOWA, BRAKUJĄCA LINIA ----
+        # Pobieramy listę słów z aktualnego segmentu transkrypcji.
+        words_in_segment = segment.get("words", [])
+        # -------------------------------------------
+
+        if not words_in_segment:
             continue
 
-        segment_start = segment["start"]
-        segment_end = segment["end"]
-
-        for word_info in words:
-            word_text = word_info["word"].strip()
+        # Przechodzimy po słowach w segmencie, używając enumerate() aby uzyskać ich unikalny indeks
+        for word_index, word_info in enumerate(words_in_segment):
             word_start = word_info["start"]
             word_end = word_info["end"]
 
-            img = make_text_image(segment_text, word_text, fontsize=65)
+            # Tworzymy obraz, przekazując cały tekst segmentu oraz INDEKS słowa do podświetlenia.
+            img = make_text_image(segment_text, highlight_word_index=word_index, fontsize=65)
             array_img = np.array(img)
 
             subtitle = ImageClip(array_img).with_duration(word_end - word_start)
             subtitle = subtitle.with_start(word_start).with_position(("center", height * 0.5))
             subtitle_clips.append(subtitle)
 
-        # Tworzenie napisów SRT
+        # Tworzenie napisów SRT (bez zmian)
+        segment_start = segment["start"]
+        segment_end = segment["end"]
         start_srt = '{:02}:{:02}:{:02},{:03}'.format(int(segment_start // 3600), int((segment_start % 3600) // 60), int(segment_start % 60), int((segment_start % 1)*1000))
         end_srt = '{:02}:{:02}:{:02},{:03}'.format(int(segment_end // 3600), int((segment_end % 3600) // 60), int(segment_end % 60), int((segment_end % 1)*1000))
         srt_lines.append(f"{idx}\n{start_srt} --> {end_srt}\n{segment_text}\n\n")
