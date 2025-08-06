@@ -9,3 +9,4 @@ venv2
 venv
 requirements.txt
 .env
+venv
