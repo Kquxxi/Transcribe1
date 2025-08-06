@@ -1,14 +1,31 @@
+<<<<<<< HEAD
 import os
 import whisper
 from moviepy.video.io.VideoFileClip import VideoFileClip
+=======
+import whisperx
+from dotenv import load_dotenv
+load_dotenv()
+import os
+from moviepy.editor import VideoFileClip
+from whisperx.diarize import DiarizationPipeline
+>>>>>>> 54f9f9b (Update speaker detection)
 from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 from moviepy.video.VideoClip import ImageClip
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import textwrap
 
+<<<<<<< HEAD
 # Załaduj model Whisper (medium balansuje dokładność i prędkość)
 model = whisper.load_model("medium")
+=======
+
+# Kolory dla mówców
+SPEAKER_COLORS = [
+    "yellow", "cyan", "magenta", "lime", "orange", "deepskyblue", "violet", "salmon"
+]
+>>>>>>> 54f9f9b (Update speaker detection)
 
 # Foldery wejścia/wyjścia
 input_folder = "clips"
@@ -136,6 +153,7 @@ def add_captions(video_path, output_path, subtitle_path):
 
 # Główna pętla
 def main():
+<<<<<<< HEAD
     for filename in os.listdir(input_folder):
         if filename.lower().endswith(".mp4"):
             in_path = os.path.join(input_folder, filename)
@@ -143,6 +161,24 @@ def main():
             subtitle_path = os.path.join(subtitle_folder, f"{os.path.splitext(filename)[0]}.srt")
             print(f"Przetwarzam: {filename}")
             add_captions(in_path, out_path, subtitle_path)
+=======
+    input_folder = "clips"
+    output_folder = "output"
+    subtitle_folder = "subtitles"
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        raise ValueError("Brak tokena HF_TOKEN w pliku .env!")
+    os.makedirs(output_folder, exist_ok=True)
+    os.makedirs(subtitle_folder, exist_ok=True)
+
+    for fn in os.listdir(input_folder):
+        if fn.lower().endswith(".mp4"):
+            in_p = os.path.join(input_folder, fn)
+            out_p = os.path.join(output_folder, f"captioned_{fn}")
+            sub_p = os.path.join(subtitle_folder, f"{os.path.splitext(fn)[0]}.srt")
+            print("Processing:", fn)
+            add_captions(in_p, out_p, sub_p, hf_token)
+>>>>>>> 54f9f9b (Update speaker detection)
     print("Wszystkie klipy zostały przetworzone!")
 
 if __name__ == '__main__':
