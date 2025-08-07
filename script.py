@@ -1,8 +1,9 @@
+import os
+import json
+import unicodedata
 import whisperx
 from dotenv import load_dotenv
-load_dotenv()
-import os
-from moviepy.editor import VideoFileClip
+from moviepy.editor import VideoFileClip, AudioFileClip
 from whisperx.diarize import DiarizationPipeline
 from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 from moviepy.video.VideoClip import VideoClip
@@ -10,28 +11,54 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import textwrap
 
+# --- Ładowanie bazy przekleństw ---
+def load_badwords(path="badwords.json"):
+    with open(path, "r", encoding="utf-8") as f:
+        return set(json.load(f))
+BADWORDS = load_badwords()
 
-# Kolory dla mówców
+def normalize_text(text):
+    # Usuwa polskie znaki
+    return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+
+def censor_word(word):
+    norm_word = normalize_text(word.lower())
+    for bad in BADWORDS:
+        norm_bad = normalize_text(bad)
+        if norm_bad in norm_word and len(word) > 2:
+            if len(word) > 4:
+                return word[0] + "*" * (len(word)-2) + word[-1]
+            else:
+                return word[0] + "*" * (len(word)-1)
+    return word
+
+def is_bad_word(word):
+    norm_word = normalize_text(word.lower())
+    for bad in BADWORDS:
+        norm_bad = normalize_text(bad)
+        if norm_bad in norm_word and len(word) > 2:
+            return True
+    return False
+
+# --- Kolory dla mówców ---
 SPEAKER_COLORS = [
     "yellow", "cyan", "magenta", "lime", "orange", "deepskyblue", "violet", "salmon"
 ]
-
 def get_speaker_color(speaker):
     idx = int(speaker.replace("SPEAKER_", ""))
     return SPEAKER_COLORS[idx % len(SPEAKER_COLORS)]
 
-# GŁÓWNA FUNKCJA KARAOKE CLIP: jeden klip na subsegment, highlight płynnie za słowem
+# --- Funkcja generująca karaoke napisy z cenzurą ---
 def make_karaoke_clip(display_text, words, seg_start, seg_end, highlight_color, font_path=None, fontsize=65, height=1080):
     try:
         font = ImageFont.truetype(font_path or "arialbd.ttf", fontsize)
     except IOError:
         font = ImageFont.load_default()
 
-    words_in_display = display_text.split()
-    if len(words_in_display) != len(words):
-        print(f"UWAGA: Niezgodność liczby słów: {len(words_in_display)} (display) != {len(words)} (words). Dopasowanie highlightu może być niedokładne.")
+    censored_words = [censor_word(w['word'].strip('., ')) for w in words]
+    display_text_censored = " ".join(censored_words)
 
-    wrapped_lines = textwrap.wrap(display_text, width=25)
+    wrapped_lines = textwrap.wrap(display_text_censored, width=25)
     text_width = max((font.getbbox(line)[2] - font.getbbox(line)[0]) for line in wrapped_lines) if wrapped_lines else 0
     line_spacing = fontsize + 10
     text_height = len(wrapped_lines) * line_spacing + 30
@@ -77,7 +104,7 @@ def make_karaoke_clip(display_text, words, seg_start, seg_end, highlight_color, 
 
         rgba = np.array(img)
         rgb = rgba[...,:3]
-        alpha = rgba[...,3] / 255.0  # 0-1 float
+        alpha = rgba[...,3] / 255.0
         return rgb, alpha
 
     duration = seg_end - seg_start
@@ -93,10 +120,29 @@ def make_karaoke_clip(display_text, words, seg_start, seg_end, highlight_color, 
     mask_clip  = VideoClip(make_mask_frame, ismask=True,  duration=duration)
     karaoke_clip = color_clip.set_mask(mask_clip)
     return karaoke_clip.set_start(seg_start).set_position(("center", height * 0.5))
-    
+
+# --- Wyciszanie przekleństw w AUDIO ---
+def censor_audio(audio_path, word_segments, output_audio_path):
+    import soundfile as sf
+    import librosa
+
+    y, sr = librosa.load(audio_path, sr=None)
+    mask = np.ones_like(y)
+
+    for w in word_segments:
+        if is_bad_word(w['word']):
+            s = int(w['start'] * sr)
+            e = int(w['end'] * sr)
+            mask[s:e] = 0  # wyciszamy te próbki
+
+    y_censored = y * mask
+    sf.write(output_audio_path, y_censored, sr)
+
+# --- GŁÓWNA LOGIKA ---
 def add_captions(video_path, output_path, subtitle_path, hf_token):
     video = VideoFileClip(video_path)
     audio_tmp = "temp_audio.wav"
+    censored_audio_tmp = "temp_audio_censored.wav"
     video.audio.write_audiofile(audio_tmp)
 
     device = "cpu"
@@ -118,24 +164,35 @@ def add_captions(video_path, output_path, subtitle_path, hf_token):
     srt_lines = []
     idx = 1
 
+    # --- Cenzura audio po słowie ---
+    all_words = []
     for seg in final["segments"]:
         words = seg.get("words", [])
         if not words:
             continue
-        # Podział na subfragmenty (podzielone po interpunkcji)
+        all_words.extend(words)
+
+    censor_audio(audio_tmp, all_words, censored_audio_tmp)
+
+    # --- Napisy z cenzurą ---
+    for seg in final["segments"]:
+        words = seg.get("words", [])
+        if not words:
+            continue
+        # Podział na subfragmenty (po interpunkcji)
         sub_segs = []
         cur = []
         for w in words:
             cur.append(w)
             if w['word'].strip().endswith((',', '.')):
-                sub_segs.append(cur); cur = []
+                sub_segs.append(cur)
+                cur = []
         if cur: sub_segs.append(cur)
 
         for sub in sub_segs:
             display_text = " ".join([w['word'].strip('., ') for w in sub])
             seg_start = sub[0]['start']
             seg_end = sub[-1]['end']
-            # Najczęstszy speaker w subsegmencie
             speakers = [w.get("speaker", "SPEAKER_00") for w in sub]
             main_speaker = max(set(speakers), key=speakers.count)
             color = get_speaker_color(main_speaker)
@@ -153,14 +210,19 @@ def add_captions(video_path, output_path, subtitle_path, hf_token):
     with open(subtitle_path, "w", encoding="utf-8") as f:
         f.writelines(srt_lines)
 
-    final_video = CompositeVideoClip([video, *subtitle_clips])
+    # Zamień dźwięk w wideo na wyciszony
+    video_censored = video.set_audio(AudioFileClip(censored_audio_tmp))
+    final_video = CompositeVideoClip([video_censored, *subtitle_clips])
     final_video.write_videofile(output_path, fps=video.fps)
+
     os.remove(audio_tmp)
+    os.remove(censored_audio_tmp)
 
 def main():
     input_folder = "clips"
     output_folder = "output"
     subtitle_folder = "subtitles"
+    load_dotenv()
     hf_token = os.getenv("HF_TOKEN")
     if not hf_token:
         raise ValueError("Brak tokena HF_TOKEN w pliku .env!")
